@@ -1,0 +1,41 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+/opt/soc/venv/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Distribution / build
+dist/
+build/
+*.egg-info/
+
+# Trained model artefacts
+*.joblib
+*.pkl
+*.pickle
+
+# AI pipeline output CSVs
+/tmp/ai_detection_*.csv
+
+# Datasets (large / sensitive data files)
+datasets/*.csv
+datasets/*.jsonl
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Wazuh certificates (generated at install time)
+wazuh_config/certs/
