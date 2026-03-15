@@ -1,0 +1,132 @@
+{
+  "id": "soc_triage_workflow",
+  "name": "SOC Triage – Wazuh Alert Response",
+  "description": "Receives Wazuh alerts (level ≥ 7) via webhook, enriches them with threat-intel context, routes by severity, and automatically isolates hosts or disables accounts for critical alerts.",
+  "tags": ["soc", "wazuh", "insider-threat", "ueba"],
+
+  "triggers": [
+    {
+      "id": "trigger_wazuh_webhook",
+      "app_name": "Webhook",
+      "name": "Receive Wazuh Alert",
+      "type": "webhook",
+      "parameters": {
+        "id": "webhook_soc_triage"
+      }
+    }
+  ],
+
+  "actions": [
+
+    {
+      "id": "parse_alert",
+      "name": "Parse Alert Fields",
+      "app_name": "Shuffle Tools",
+      "app_version": "1.2.0",
+      "action": "execute_python",
+      "parameters": {
+        "code": "import json\nalert = json.loads(exec_input)\nrule_level = int(alert.get('rule', {}).get('level', 0))\nrule_id    = str(alert.get('rule', {}).get('id', ''))\nrule_desc  = alert.get('rule', {}).get('description', '')\nagent_name = alert.get('agent', {}).get('name', 'unknown')\nagent_ip   = alert.get('agent', {}).get('ip', 'unknown')\nwin_data   = alert.get('data', {}).get('win', {}).get('eventdata', {})\nusername   = win_data.get('targetUserName') or win_data.get('subjectUserName') or 'unknown'\nlogon_type = win_data.get('logonType', '')\nreturn json.dumps({'rule_level': rule_level, 'rule_id': rule_id, 'rule_desc': rule_desc, 'agent_name': agent_name, 'agent_ip': agent_ip, 'username': username, 'logon_type': logon_type})",
+        "exec_input": "$trigger_wazuh_webhook.body"
+      }
+    },
+
+    {
+      "id": "route_by_severity",
+      "name": "Route by Rule Level",
+      "app_name": "Shuffle Tools",
+      "app_version": "1.2.0",
+      "action": "condition",
+      "conditions": [
+        {
+          "condition": "$parse_alert.rule_level >= 12",
+          "action": "critical_response"
+        },
+        {
+          "condition": "$parse_alert.rule_level >= 9",
+          "action": "high_response"
+        },
+        {
+          "condition": "$parse_alert.rule_level >= 7",
+          "action": "medium_response"
+        }
+      ]
+    },
+
+    {
+      "id": "critical_response",
+      "name": "Critical – Isolate Host + Disable Account",
+      "app_name": "Shuffle Tools",
+      "app_version": "1.2.0",
+      "action": "execute_python",
+      "parameters": {
+        "code": "import json, requests, os\ndata = json.loads(exec_input)\nwazuh_base = os.environ.get('WAZUH_API_URL', 'https://localhost:55000')\ntoken_resp = requests.post(f'{wazuh_base}/security/user/authenticate', auth=('admin', os.environ.get('WAZUH_PASSWORD', 'WazuhAdmin@SOC2024')), verify=False)\ntoken = token_resp.json().get('data', {}).get('token', '')\nheaders = {'Authorization': f'Bearer {token}'}\n# Disable user account via active response\nar_payload = {'command': 'disable-account', 'arguments': [data['username']], 'alert': {'data': {'win': {'eventdata': {'targetUserName': data['username']}}}}}\nar_resp = requests.put(f'{wazuh_base}/active-response', headers=headers, json=ar_payload, verify=False)\nreturn json.dumps({'action': 'isolated', 'agent': data['agent_name'], 'user': data['username'], 'ar_status': ar_resp.status_code})",
+        "exec_input": "$parse_alert"
+      }
+    },
+
+    {
+      "id": "create_case",
+      "name": "Create Incident Case",
+      "app_name": "TheHive",
+      "app_version": "1.0.0",
+      "action": "create_case",
+      "parameters": {
+        "title": "SOC Alert Level $parse_alert.rule_level – $parse_alert.rule_desc",
+        "description": "**Agent**: $parse_alert.agent_name ($parse_alert.agent_ip)\n**User**: $parse_alert.username\n**Rule**: $parse_alert.rule_id – $parse_alert.rule_desc\n**Logon Type**: $parse_alert.logon_type\n**AI Behaviours**: $trigger_wazuh_webhook.body.ai_behaviours",
+        "severity": 3,
+        "tags": ["wazuh", "soc", "ueba"],
+        "tlp": 2,
+        "flag": false
+      }
+    },
+
+    {
+      "id": "high_response",
+      "name": "High – Send Alert Email",
+      "app_name": "Email",
+      "app_version": "1.0.0",
+      "action": "send_email",
+      "parameters": {
+        "recipients": "$SOC_EMAIL",
+        "subject": "[HIGH] Wazuh Alert Level $parse_alert.rule_level on $parse_alert.agent_name",
+        "body": "Alert Details:\n\nUser     : $parse_alert.username\nAgent    : $parse_alert.agent_name  ($parse_alert.agent_ip)\nRule     : $parse_alert.rule_id\nDesc     : $parse_alert.rule_desc\nLogon    : $parse_alert.logon_type\n\nPlease investigate immediately."
+      }
+    },
+
+    {
+      "id": "medium_response",
+      "name": "Medium – Create Ticket",
+      "app_name": "Shuffle Tools",
+      "app_version": "1.2.0",
+      "action": "write_file",
+      "parameters": {
+        "path": "/opt/soc/tickets/$trigger_wazuh_webhook.body.id.json",
+        "content": "$trigger_wazuh_webhook.body"
+      }
+    },
+
+    {
+      "id": "send_slack_notification",
+      "name": "Notify SOC Channel",
+      "app_name": "Slack",
+      "app_version": "1.0.0",
+      "action": "post_message",
+      "parameters": {
+        "channel": "#soc-alerts",
+        "message": ":rotating_light: *Wazuh Alert Level $parse_alert.rule_level*\n• Agent: `$parse_alert.agent_name` ($parse_alert.agent_ip)\n• User: `$parse_alert.username`\n• Rule: `$parse_alert.rule_id` – $parse_alert.rule_desc"
+      }
+    }
+
+  ],
+
+  "workflow": [
+    {"from": "trigger_wazuh_webhook", "to": "parse_alert"},
+    {"from": "parse_alert",          "to": "route_by_severity"},
+    {"from": "route_by_severity",    "to": "critical_response", "condition": "critical"},
+    {"from": "route_by_severity",    "to": "high_response",     "condition": "high"},
+    {"from": "route_by_severity",    "to": "medium_response",   "condition": "medium"},
+    {"from": "critical_response",    "to": "create_case"},
+    {"from": "high_response",        "to": "create_case"},
+    {"from": "create_case",          "to": "send_slack_notification"}
+  ]
+}

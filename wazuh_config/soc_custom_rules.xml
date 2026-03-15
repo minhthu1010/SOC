@@ -1,0 +1,167 @@
+<!-- =============================================================================
+     Wazuh Custom Rules – SOC Insider Threat / Anomaly Detection
+     File  : /var/ossec/etc/rules/soc_custom_rules.xml
+     Rules cover the 5 behaviours required by the problem statement:
+       1. Abnormal login frequency           (rule 100010)
+       2. Abnormal resource access           (rule 100020-100021)
+       3. Abnormal logon type change         (rule 100030-100033)
+       4. Login outside business hours       (rule 100040)
+       5. Spike in number of hosts accessed  (rule 100050)
+     Plus AI score forwarding               (rule 100060)
+============================================================================= -->
+<group name="soc,insider_threat,anomaly">
+
+  <!-- ────────────────────────────────────────────────────────────────────────
+       Group 1 – Abnormal login frequency
+       Fires when ≥ 10 successful logins occur within 2 minutes from one user.
+  ──────────────────────────────────────────────────────────────────────────── -->
+  <rule id="100010" level="10" frequency="10" timeframe="120">
+    <if_matched_sid>60106</if_matched_sid>   <!-- Wazuh built-in: Windows successful logon -->
+    <same_field>win.eventdata.targetUserName</same_field>
+    <description>Abnormal login frequency: $(win.eventdata.targetUserName) logged in
+      $(win.rule.firedtimes) times in 2 minutes (possible credential stuffing or
+      automation)</description>
+    <mitre>
+      <id>T1078</id>
+    </mitre>
+    <group>authentication_success,pci_dss_8.1.4,gdpr_IV_35.7.d</group>
+  </rule>
+
+  <!-- ────────────────────────────────────────────────────────────────────────
+       Group 2a – Abnormal resource access (shared folder – Event 5140)
+  ──────────────────────────────────────────────────────────────────────────── -->
+  <rule id="100020" level="8" frequency="15" timeframe="300">
+    <if_matched_sid>60155</if_matched_sid>   <!-- Wazuh built-in: network share accessed -->
+    <same_field>win.eventdata.subjectUserName</same_field>
+    <description>Abnormal resource access: $(win.eventdata.subjectUserName) accessed
+      $(win.rule.firedtimes) network shares in 5 minutes</description>
+    <mitre>
+      <id>T1039</id>
+    </mitre>
+    <group>resource_access,pci_dss_10.2.7</group>
+  </rule>
+
+  <!-- ────────────────────────────────────────────────────────────────────────
+       Group 2b – Abnormal resource access (detailed share check – Event 5145)
+  ──────────────────────────────────────────────────────────────────────────── -->
+  <rule id="100021" level="9" frequency="20" timeframe="300">
+    <if_matched_sid>60158</if_matched_sid>   <!-- Wazuh built-in: detailed file share access -->
+    <same_field>win.eventdata.subjectUserName</same_field>
+    <description>Abnormal file share access: $(win.eventdata.subjectUserName) made
+      $(win.rule.firedtimes) detailed share accesses in 5 minutes</description>
+    <mitre>
+      <id>T1039</id>
+    </mitre>
+    <group>resource_access</group>
+  </rule>
+
+  <!-- ────────────────────────────────────────────────────────────────────────
+       Group 3 – Abnormal logon type (Windows Event 4624)
+       Logon type 3 = Network, 10 = RemoteInteractive, etc.
+       Alerts when a user who normally uses Type 2 (Interactive) suddenly
+       uses a different type, or when unusual types (5,8,9,10) are seen.
+  ──────────────────────────────────────────────────────────────────────────── -->
+  <!-- Logon type 10 – Remote Interactive (RDP) from an unexpected host -->
+  <rule id="100030" level="10">
+    <if_sid>60106</if_sid>
+    <field name="win.eventdata.logonType">^10$</field>
+    <description>Remote Interactive (RDP) logon detected: user=$(win.eventdata.targetUserName)
+      src=$(win.eventdata.ipAddress)</description>
+    <mitre>
+      <id>T1021.001</id>
+    </mitre>
+    <group>logon_type,authentication_success</group>
+  </rule>
+
+  <!-- Logon type 8 – NetworkCleartext (credentials sent in plain text) -->
+  <rule id="100031" level="12">
+    <if_sid>60106</if_sid>
+    <field name="win.eventdata.logonType">^8$</field>
+    <description>NetworkCleartext logon (Type 8): $(win.eventdata.targetUserName) –
+      credentials may have been transmitted in clear text</description>
+    <mitre>
+      <id>T1078</id>
+    </mitre>
+    <group>logon_type,authentication_success</group>
+  </rule>
+
+  <!-- Logon type 9 – NewCredentials (RunAs with different credentials) -->
+  <rule id="100032" level="10">
+    <if_sid>60106</if_sid>
+    <field name="win.eventdata.logonType">^9$</field>
+    <description>NewCredentials logon (Type 9 / RunAs): $(win.eventdata.targetUserName)
+      – potential credential misuse</description>
+    <mitre>
+      <id>T1078</id>
+    </mitre>
+    <group>logon_type,authentication_success</group>
+  </rule>
+
+  <!-- Logon type 5 – Service logon (unusual for regular users) -->
+  <rule id="100033" level="8">
+    <if_sid>60106</if_sid>
+    <field name="win.eventdata.logonType">^5$</field>
+    <field name="win.eventdata.targetUserName" negate="yes">^\$</field>
+    <description>Service logon (Type 5) for non-system account: $(win.eventdata.targetUserName)
+      – investigate if unexpected</description>
+    <mitre>
+      <id>T1543</id>
+    </mitre>
+    <group>logon_type,authentication_success</group>
+  </rule>
+
+  <!-- ────────────────────────────────────────────────────────────────────────
+       Group 4 – Login outside business hours (20:00–06:00)
+       Uses timeframe matching on the event timestamp.
+  ──────────────────────────────────────────────────────────────────────────── -->
+  <rule id="100040" level="9">
+    <if_sid>60106</if_sid>
+    <time>20:00 - 06:00</time>
+    <description>Login outside business hours: $(win.eventdata.targetUserName) logged
+      in at $(timestamp) from $(win.eventdata.ipAddress)</description>
+    <mitre>
+      <id>T1078</id>
+    </mitre>
+    <group>after_hours,authentication_success</group>
+  </rule>
+
+  <!-- ────────────────────────────────────────────────────────────────────────
+       Group 5 – Spike in hosts accessed (lateral movement indicator)
+       Fires when the same user successfully logs in to ≥ 5 different
+       workstations within 10 minutes.
+  ──────────────────────────────────────────────────────────────────────────── -->
+  <rule id="100050" level="12" frequency="5" timeframe="600">
+    <if_matched_sid>60106</if_matched_sid>
+    <same_field>win.eventdata.targetUserName</same_field>
+    <different_field>win.eventdata.workstationName</different_field>
+    <description>Lateral movement: $(win.eventdata.targetUserName) accessed
+      $(win.rule.firedtimes) different hosts in 10 minutes</description>
+    <mitre>
+      <id>T1021</id>
+    </mitre>
+    <group>lateral_movement,pci_dss_10.6.1</group>
+  </rule>
+
+  <!-- ────────────────────────────────────────────────────────────────────────
+       AI anomaly score alert – forwarded by the Python AI module
+       (custom decoder required – see wazuh_config/custom_decoders.xml)
+  ──────────────────────────────────────────────────────────────────────────── -->
+  <rule id="100060" level="0">
+    <decoded_as>json</decoded_as>
+    <field name="ai_alert">\.+</field>
+    <description>AI anomaly score received from Isolation Forest module</description>
+    <group>ai_detection</group>
+  </rule>
+
+  <rule id="100061" level="13">
+    <if_sid>100060</if_sid>
+    <field name="ai_score" type="pcre2">^-\d+(\.\d+)?</field>
+    <description>AI Isolation Forest anomaly detected: user=$(user) score=$(ai_score)
+      behaviours=$(ai_behaviours)</description>
+    <mitre>
+      <id>T1078</id>
+    </mitre>
+    <group>ai_detection,insider_threat</group>
+  </rule>
+
+</group>

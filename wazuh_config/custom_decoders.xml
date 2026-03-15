@@ -1,0 +1,23 @@
+<!--
+  Custom Wazuh Decoders for SOC AI module alerts
+  File: /var/ossec/etc/decoders/soc_custom_decoders.xml
+
+  The Python AI module writes JSON alerts to /var/ossec/logs/ai_alerts.log
+  and Wazuh reads them via a localfile block.  These decoders parse the JSON
+  and expose fields to the rule engine.
+-->
+<decoder_group name="soc_ai">
+
+  <!-- Parent decoder: match any JSON with the "ai_alert" key -->
+  <decoder name="soc-ai-alert">
+    <prematch>{"ai_alert":</prematch>
+  </decoder>
+
+  <!-- Child: extract individual fields -->
+  <decoder name="soc-ai-alert-fields">
+    <parent>soc-ai-alert</parent>
+    <use_own_name>yes</use_own_name>
+    <plugin_decoder>JSON_Decoder</plugin_decoder>
+  </decoder>
+
+</decoder_group>
